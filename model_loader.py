@@ -38,10 +38,13 @@ def load_model(
     model_name: str = DEFAULT_MODEL_NAME,
     device: Optional[str] = None,
     seed: Optional[int] = 42,
-    temperature: float = 0.7,
-    top_p: float = 0.9,
-    max_new_tokens: int = 80,
+    temperature: float = 0.6,
+    top_p: float = 0.92,
+    max_new_tokens: int = 45,
     do_sample: bool = True,
+    repetition_penalty: float = 1.15,
+    no_repeat_ngram_size: int = 3,
+    min_new_tokens: int | None = None,
 ) -> ModelBundle:
     """Args:
         model_name: Hugging Face model identifier.
@@ -107,7 +110,11 @@ def load_model(
         top_p=top_p,
         max_new_tokens=max_new_tokens,
         pad_token_id=tokenizer.pad_token_id,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
     )
+    if min_new_tokens is not None:
+        default_gen["min_new_tokens"] = min_new_tokens
 
     return ModelBundle(
         pipe=text_gen_pipe,

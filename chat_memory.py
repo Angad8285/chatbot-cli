@@ -12,6 +12,9 @@ class Turn:
     bot: str
 
 
+DEFAULT_PERSONA = "You are a helpful, friendly assistant. Be concise and constructive."
+
+
 class ChatMemory:
     """Sliding window memory with optional few-shot priming.
 
@@ -23,12 +26,19 @@ class ChatMemory:
     """
 
     def __init__(self, window_size: int = 4, system_prompt: Optional[str] = None,
-                 few_shot_examples: Optional[Sequence[tuple[str, str]]] = None):
+                 few_shot_examples: Optional[Sequence[tuple[str, str]]] = None,
+                 use_default_persona: bool = False):
         if window_size <= 0:
             raise ValueError("window_size must be positive")
         self.window_size = window_size
         self._turns: Deque[Turn] = deque()
-        self.system_prompt = system_prompt or "You give concise, factual answers."
+        # Hidden system prompt (not exported in transcript). If use_default_persona and none provided, set default.
+        if system_prompt:
+            self.system_prompt = system_prompt.strip()
+        elif use_default_persona:
+            self.system_prompt = DEFAULT_PERSONA
+        else:
+            self.system_prompt = ""
         self._few_shot: List[Turn] = []
         if few_shot_examples:
             for u, b in few_shot_examples:
@@ -59,7 +69,7 @@ class ChatMemory:
             Bot:
         """
         lines: List[str] = []
-        if self.system_prompt:
+        if self.system_prompt.strip():
             lines.append(self.system_prompt.strip())
             lines.append("")
         for t in self._few_shot:
@@ -73,7 +83,7 @@ class ChatMemory:
         return "\n".join(lines)
 
     def export_transcript(self) -> str:
-        """Return a simple multi-line string transcript."""
+        """Return transcript excluding the hidden system prompt and few-shot examples."""
         out_lines: List[str] = []
         for t in self._turns:
             out_lines.append(f"User: {t.user}\nBot: {t.bot}\n")
