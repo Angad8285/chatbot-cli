@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import datetime as _dt
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Set
+from typing import Optional, List
 import re
 
 from model_loader import load_model, ModelBundle
@@ -12,17 +12,9 @@ from chat_memory import ChatMemory, DEFAULT_PERSONA
 COMMAND_PREFIX = "/"
 
 
-###############################
-# Dual-mode generation (legacy + chat-template)
-###############################
-
 LOW_INFO_PATTERN = re.compile(r"^(i'?m (a )?(simple )?bot\.?.|i did\.?.|i don't know\.?.){1,2}$", re.I)
 TRIVIAL_SET = {"hi","hey","hello","ok","k","yeah","yep","oh","cool"}
 PUNCT_ONLY = re.compile(r"^[\W_]+$")
-QUESTION_PATTERN = re.compile(r"\b(what|who|when|where|why|how)\b|capital of|meaning of", re.I)
-
-def is_question(text: str) -> bool:
-    return bool(QUESTION_PATTERN.search(text)) or text.strip().endswith("?")
 
 def is_low_info(reply: str) -> bool:
     base = reply.strip().lower()
@@ -38,86 +30,12 @@ def is_low_info(reply: str) -> bool:
         return True
     return False
 
-def extract_bot_reply(full: str) -> str:
-    pos = full.rfind("Bot:")
-    segment = full[pos + 4:] if pos != -1 else full
-    m = re.search(r"\n(?:User|Bot)\s*:", segment, flags=re.I)
-    if m:
-        segment = segment[:m.start()]
-    segment = re.sub(r"\[[^\]]+\]", "", segment)
-    segment = re.sub(r"\b(User|Bot)\s*:", "", segment, flags=re.I)
-    segment = re.sub(r"\b(u\s+)?lt\s*3\b", "<3", segment, flags=re.I)
-    segment = re.sub(r"\s+", " ", segment)
-    return segment.strip()
-
-def jaccard_similarity(a: str, b: str) -> float:
-    sa = set(a.lower().split())
-    sb = set(b.lower().split())
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
-
-def is_corrupted(text: str) -> bool:
-    if re.search(r"\b(User|Bot)\s*:\s*(User|Bot)?", text, flags=re.I):
-        return True
-    if len(re.findall(r"[A-Za-z]", text)) < 3 and len(text) > 10:
-        return True
-    if len(re.findall(r"\b(User|Bot)\s*:", text, flags=re.I)) > 0:
-        return True
-    return False
-
-def generate_reply(bundle: ModelBundle, prompt: str, user_input: str, recent_replies: List[str]) -> str:
-    gen_kwargs = bundle.default_gen_kwargs.copy()
-    gen_kwargs.setdefault("min_new_tokens", 8)
-    gen_kwargs["max_new_tokens"] = max(gen_kwargs.get("max_new_tokens", 55), 55)
-    gen_kwargs.setdefault("repetition_penalty", 1.18 if is_question(user_input) else 1.15)
-    gen_kwargs.setdefault("no_repeat_ngram_size", 3)
-    if is_question(user_input):
-        gen_kwargs["temperature"] = min(gen_kwargs.get("temperature", 0.6), 0.55)
-        gen_kwargs["top_p"] = min(gen_kwargs.get("top_p", 0.92), 0.9)
-    result = bundle.pipe(prompt, **gen_kwargs)[0]["generated_text"]
-    reply = extract_bot_reply(result)
-    reply = re.sub(r"\b(User|Bot)\s*:", "", reply, flags=re.I).strip()
-    def needs_retry(r: str) -> bool:
-        if is_low_info(r):
-            return True
-        for prev in recent_replies[-5:]:
-            if jaccard_similarity(prev, r) > 0.8:
-                return True
-        return False
-    if needs_retry(reply) or is_corrupted(reply):
-        regen = gen_kwargs.copy()
-        regen["temperature"] = max(0.45, gen_kwargs.get("temperature", 0.55) - 0.05)
-        regen["top_p"] = min(gen_kwargs.get("top_p", 0.9), 0.9)
-        regen["repetition_penalty"] = max(1.2, gen_kwargs.get("repetition_penalty", 1.15))
-        regen["min_new_tokens"] = max(8, regen.get("min_new_tokens", 8))
-        result2 = bundle.pipe(prompt, **regen)[0]["generated_text"]
-        cand = extract_bot_reply(result2)
-        cand = re.sub(r"\b(User|Bot)\s*:", "", cand, flags=re.I).strip()
-        if not needs_retry(cand):
-            reply = cand
-    return reply
-
-def is_chat_template_model(bundle: ModelBundle) -> bool:
-    tok = getattr(bundle.pipe, "tokenizer", None)
-    if tok is None:
-        return False
-    if hasattr(tok, "chat_template") and tok.chat_template:
-        return True
-    return False
-
 
 def generate_reply_chat(bundle: ModelBundle, messages: list, recent_replies: List[str]) -> str:
-    """Generate reply for chat-template capable models (e.g., TinyLlama)."""
+    """Generate reply using tokenizer chat template. Assumes model supports it."""
     tok = bundle.pipe.tokenizer
     prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    gen_kwargs = bundle.default_gen_kwargs.copy()
-    # Chat models often like a bit more length by default
-    gen_kwargs.setdefault("max_new_tokens", 128)
-    # Ensure sampling defaults reasonable
-    gen_kwargs.setdefault("temperature", 0.7)
-    gen_kwargs.setdefault("top_p", 0.95)
-    gen_kwargs.setdefault("top_k", 50)
+    gen_kwargs = bundle.default_gen_kwargs
     result = bundle.pipe(prompt, **gen_kwargs)[0]["generated_text"]
     # Extract new text after prompt
     if result.startswith(prompt):
@@ -184,9 +102,14 @@ def handle_command(cmd: str, memory: ChatMemory, bundle: ModelBundle) -> bool:
         return True
     if base == "/config":
         cfg = bundle.default_gen_kwargs
+        extras = []
+        for k in ["top_k","repetition_penalty","no_repeat_ngram_size","min_new_tokens"]:
+            if k in cfg:
+                extras.append(f"{k}={cfg[k]}")
+        extras_str = " ".join(extras)
         print(
-            f"Model={bundle.model_name} temperature={cfg['temperature']} top_p={cfg['top_p']} "
-            f"max_new_tokens={cfg['max_new_tokens']} window={memory.window_size}"
+            f"Model={bundle.model_name} temp={cfg['temperature']} top_p={cfg['top_p']} "
+            f"max_new_tokens={cfg['max_new_tokens']} window={memory.window_size} {extras_str}".strip()
         )
         return True
 
@@ -283,19 +206,10 @@ def run_cli(
                 memory.add_turn(user, ans)
                 recent_replies.append(ans)
                 continue
-        chat_mode = is_chat_template_model(bundle)
-        messages = []
-        prompt = ""
-        if chat_mode:
-            messages = memory.build_messages(user)
-        else:
-            prompt = memory.build_context(user)
+        messages = memory.build_messages(user)
 
         try:
-            if chat_mode:
-                bot_reply = generate_reply_chat(bundle, messages, recent_replies=recent_replies)
-            else:
-                bot_reply = generate_reply(bundle, prompt, user_input=user, recent_replies=recent_replies)
+            bot_reply = generate_reply_chat(bundle, messages, recent_replies=recent_replies)
         except KeyboardInterrupt:
             print("\n[ABORTED] Generation interrupted.")
             continue

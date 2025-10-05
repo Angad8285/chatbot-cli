@@ -1,18 +1,17 @@
-# Local Command-Line Chatbot
+# Local Command-Line Chatbot (TinyLlama Focused)
 
-Lightweight local chatbot supporting both legacy dialogue models (DialoGPT) and modern chat-template models (TinyLlama). Provides a sliding window memory, configurable decoding, and simple factual shortcuts (arithmetic, capital cities).
+Lightweight local chatbot optimized for a modern chat-template model (TinyLlama 1.1B Chat). Sliding window memory, configurable decoding, and simple factual shortcuts (arithmetic, capital cities). Legacy non-chat prompt support has been removed.
 
 ## Contents
 1. Quick Start
 2. Running & Basic Usage
-3. Models: Chat vs Non‑Chat
-4. Key CLI Flags
-5. Recommended Presets
-6. TinyLlama Usage
-7. Shortcuts (Math & Capitals)
-8. Troubleshooting Table
-9. Saving & Exporting
-10. Roadmap
+3. Key CLI Flags
+4. Recommended Presets
+5. Chat Flow
+6. Shortcuts (Math & Capitals)
+7. Troubleshooting Table
+8. Saving & Exporting
+9. Roadmap
 
 ---
 ## 1. Quick Start
@@ -20,12 +19,12 @@ Lightweight local chatbot supporting both legacy dialogue models (DialoGPT) and 
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python main.py  # defaults to TinyLlama/TinyLlama-1.1B-Chat-v1.0 with tuned hyperparameters
+python main.py  # loads TinyLlama with tuned defaults
 ```
 
-Legacy (non-chat) example using DialoGPT-small:
+To try another chat model (must have a chat template):
 ```bash
-python main.py --model microsoft/DialoGPT-small --temperature 0.55 --top-p 0.9 --top-k 50
+python main.py --model <other-chat-model>
 ```
 
 ## 2. Running & Basic Usage
@@ -33,81 +32,61 @@ Start the REPL:
 ```bash
 python main.py --profile focused
 ```
-Commands inside REPL:
-`/help` `/reset` `/save [file]` `/config` `/exit`
+Commands: `/help` `/reset` `/save [file]` `/config` `/exit`
 
-## 3. Models: Chat vs Non‑Chat
-| Aspect | Non‑Chat (DialoGPT) | Chat Template (TinyLlama) |
-|--------|---------------------|---------------------------|
-| Prompt format | Hand-built "User:/Bot:" lines | Tokenizer chat template | 
-| System prompt | Injected text line | System role message | 
-| Few-shot need | Helps a lot | Usually optional / minimal | 
-| Factual QA | Weak | Better | 
-| Long answers | Prone to drift | More stable |
-
-## 4. Key CLI Flags (Selected)
-`--model` choose model.
+## 3. Key CLI Flags (Selected)
+`--model` model id (default TinyLlama).
 `--window` memory turns retained.
 `--temperature` creativity (default 0.55).
 `--top-p` nucleus cutoff (default 0.9).
 `--top-k` hard candidate cap (default 50).
-`--repetition-penalty` discourage loops (>1.0, default 1.18).
+`--repetition-penalty` discourage loops (default 1.18).
 `--no-repeat-ngram` block exact n-grams (default 3).
-`--max-new-tokens` length ceiling per reply (default 160).
-`--min-new-tokens` floor to avoid one-word answers (default 10).
+`--max-new-tokens` reply max length (default 160).
+`--min-new-tokens` reply min length (default 10).
 `--system-prompt` override persona.
-`--torch-dtype` force precision (bfloat16/float16).
+`--torch-dtype` precision (bfloat16/float16).
 
-Defaults tuned for balanced factual Q&A while allowing moderate elaboration. Adjust downward for ultra-terse replies or upward (temperature/top-p) for ideation.
+Defaults tuned for balanced factual Q&A while allowing moderate elaboration.
 
-## 5. Recommended Presets
+## 4. Recommended Presets
 Focused Q&A:
 ```bash
-python main.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-	--temperature 0.55 --top-p 0.9 --top-k 50 \
-	--repetition-penalty 1.18 --no-repeat-ngram 3 \
-	--max-new-tokens 160 --min-new-tokens 10
+python main.py --temperature 0.55 --top-p 0.9 --top-k 50 \
+  --repetition-penalty 1.18 --no-repeat-ngram 3 \
+  --max-new-tokens 160 --min-new-tokens 10
 ```
 Creative Ideation:
 ```bash
-python main.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-	--temperature 0.7 --top-p 0.95 --top-k 60 \
-	--repetition-penalty 1.08 --max-new-tokens 180
-```
-Legacy Stable (DialoGPT medium):
-```bash
-python main.py --model microsoft/DialoGPT-medium \
-	--temperature 0.5 --top-p 0.88 --repetition-penalty 1.22 \
-	--no-repeat-ngram 3 --max-new-tokens 55
+python main.py --temperature 0.7 --top-p 0.95 --top-k 60 \
+  --repetition-penalty 1.08 --max-new-tokens 180
 ```
 
-## 6. TinyLlama Usage
-The tokenizer supplies a `chat_template`. We build a list of messages (system, user, assistant turns) then call `apply_chat_template(..., add_generation_prompt=True)`. Decoding is then standard `text-generation`.
+## 5. Chat Flow
+Messages (system + alternating user/assistant) are assembled and converted using the tokenizer's `chat_template` with `add_generation_prompt=True`.
 
-## 7. Shortcuts (Math & Capitals)
-Simple regex intercepts convert:
-* Arithmetic like `what is 12 * 7` → computed locally.
-* Capital queries (`capital of france`) → quick dictionary answer.
+## 6. Shortcuts (Math & Capitals)
+- Arithmetic like `what is 12 * 7` computed locally.
+- Capital queries (`capital of france`) answered via small dictionary.
 
-## 8. Troubleshooting
+## 7. Troubleshooting
 | Symptom | Likely Cause | Fix |
 |---------|--------------|-----|
 | One-word / blank replies | Too low min tokens | Increase `--min-new-tokens` (8–12) |
 | Fragmented punctuation spam | High entropy tail | Lower `--temperature`, add `--top-k 50` |
 | Repeated phrases | Weak penalties | Raise `--repetition-penalty` or `--no-repeat-ngram 4` |
-| Hallucinated role labels | Legacy format drift | Use chat model or keep few-shot minimal |
-| Wrong simple math | Model hallucination | Arithmetic shortcut already handles basic cases |
+| Wrong simple math | Model hallucination | Arithmetic shortcut handles basics |
 | Capital answer wrong | Outside dictionary | Extend capitals map or use larger model |
 
-## 9. Saving & Exporting
-Use `/save my.json` inside session to write transcript (system prompt & few-shot excluded).
+## 8. Saving & Exporting
+`/save my.json` writes transcript (system prompt & few-shot excluded).
 
-## 10. Roadmap
+## 9. Roadmap
 - Optional: `--no-few-shot` flag
 - External configurable shortcuts
 - Retrieval augmentation stub
 - Evaluation script for deterministic test set
 
 ---
-*Status:* Active experimental prototype; expect iterative refinement.
+*Status:* Active experimental prototype (TinyLlama focused); expect iterative refinement.
 

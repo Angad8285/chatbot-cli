@@ -16,15 +16,6 @@ DEFAULT_PERSONA = "You are a helpful, friendly assistant. Be concise and constru
 
 
 class ChatMemory:
-    """Sliding window memory with optional few-shot priming.
-
-    Args:
-        window_size: Max number of recent (user, bot) turns to retain.
-        system_prompt: Optional plain-text directive (no role tags) placed at top.
-        few_shot_examples: Optional list of (user, bot) example pairs that always
-            remain at the top and are NOT trimmed (anchoring behavior).
-    """
-
     def __init__(self, window_size: int = 4, system_prompt: Optional[str] = None,
                  few_shot_examples: Optional[Sequence[tuple[str, str]]] = None,
                  use_default_persona: bool = False):
@@ -54,42 +45,7 @@ class ChatMemory:
         # Clear all stored turns.
         self._turns.clear()
 
-    def build_context(self, next_user: str) -> str:
-        """Assemble legacy prompt string for non-chat models (DialoGPT style).
-
-        Format:
-            <system_prompt>\n
-            User: <few-shot user 1>\n
-            Bot: <few-shot bot 1>\n
-            ... (few-shot) ...\n
-            User: <recent user>\n
-            Bot: <recent bot>\n
-            ... up to window_size ...\n
-            User: <next_user>\n
-            Bot:
-        """
-        lines: List[str] = []
-        if self.system_prompt.strip():
-            lines.append(self.system_prompt.strip())
-            lines.append("")
-        for t in self._few_shot:
-            lines.append(f"User: {t.user}")
-            lines.append(f"Bot: {t.bot}")
-        for t in self._turns:
-            lines.append(f"User: {t.user}")
-            lines.append(f"Bot: {t.bot}")
-        lines.append(f"User: {next_user}")
-        lines.append("Bot:")
-        return "\n".join(lines)
-
     def build_messages(self, next_user: str):
-        """Return list of chat messages (dicts with role/content) suitable for tokenizer.apply_chat_template.
-
-        System prompt (if any) -> role system
-        Few-shot examples become alternating user/assistant.
-        Conversation turns likewise.
-        Final user input is appended as last 'user' role.
-        """
         messages = []
         if self.system_prompt.strip():
             messages.append({"role": "system", "content": self.system_prompt.strip()})
@@ -116,15 +72,12 @@ class ChatMemory:
         return iter(self._turns)
 
 
-if __name__ == "__main__":  # Simple manual test
+if __name__ == "__main__":  # Simple manual test (messages only)
     mem = ChatMemory(window_size=2)
     mem.add_turn("Hello", "Hi there!")
     mem.add_turn("How are you?", "I'm functioning as expected.")
-    # Legacy context format
-    print(mem.build_context("What can you do?"))
+    print(mem.build_messages("What can you do?"))
     mem.add_turn("What can you do?", "I can generate text.")
     mem.add_turn("Another question", "Another answer")
-    print("--- Messages ---")
-    print(mem.build_messages("Final?"))
     print("--- Transcript ---")
     print(mem.export_transcript())

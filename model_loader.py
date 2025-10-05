@@ -48,15 +48,6 @@ def load_model(
     top_k: Optional[int] = 50,
     torch_dtype: Optional[str] = None,
 ) -> ModelBundle:
-    """Args:
-        model_name: Hugging Face model identifier.
-        device: Explicit device override ('cpu', 'mps', 'cuda:0'); if None auto-detect.
-        seed: Random seed for reproducibility (None to skip seeding).
-        temperature: Sampling temperature.
-        top_p: Nucleus sampling probability.
-        max_new_tokens: Maximum newly generated tokens per call.
-        do_sample: Whether to enable sampling (True recommended for creativity).
-    """
     # Basic version guard (avoid very old transformers).
     try:
         ver_tuple = tuple(int(x) for x in transformers.__version__.split(".")[:3])
