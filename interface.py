@@ -12,42 +12,13 @@ from chat_memory import ChatMemory, DEFAULT_PERSONA
 COMMAND_PREFIX = "/"
 
 
-# Generation helpers
+###############################
+# Dual-mode generation (legacy + chat-template)
+###############################
 
-def extract_bot_reply(full: str) -> str:
-    """Robustly extract the last Bot turn.
-
-    Strategy:
-      1. Take substring after LAST occurrence of 'Bot:' (avoids earlier context copies).
-      2. Truncate at the first newline that begins a new role marker ('User:' or 'Bot:').
-      3. Sanitize artifacts (role echoes, bracketed tags, odd tokenization like 'u lt 3').
-      4. Collapse spaces and trim.
-    """
-    pos = full.rfind("Bot:")
-    segment = full[pos + 4:] if pos != -1 else full
-    # Truncate at next role marker (allow optional space before colon)
-    m = re.search(r"\n(?:User|Bot)\s*:", segment, flags=re.I)
-    if m:
-        segment = segment[:m.start()]
-    # Remove bracketed artifacts
-    segment = re.sub(r"\[[^\]]+\]", "", segment)
-    # Remove stray duplicated role tokens embedded mid-string
-    # Remove any inline role markers variants
-    segment = re.sub(r"\b(User|Bot)\s*:", "", segment, flags=re.I)
-    # Heart artifact normalization (u lt 3 / lt 3)
-    segment = re.sub(r"\b(u\s+)?lt\s*3\b", "<3", segment, flags=re.I)
-    # Collapse whitespace
-    segment = re.sub(r"\s+", " ", segment)
-    cleaned = segment.strip()
-    return cleaned
-
-LOW_INFO_PATTERN = re.compile(r"^(i'?m (a )?(simple )?bot\.?|i did\.?|i don't know\.?){1,2}$", re.I)
-
-# Trivial single or short tokens to treat as non-informative
+LOW_INFO_PATTERN = re.compile(r"^(i'?m (a )?(simple )?bot\.?.|i did\.?.|i don't know\.?.){1,2}$", re.I)
 TRIVIAL_SET = {"hi","hey","hello","ok","k","yeah","yep","oh","cool"}
-
 PUNCT_ONLY = re.compile(r"^[\W_]+$")
-
 QUESTION_PATTERN = re.compile(r"\b(what|who|when|where|why|how)\b|capital of|meaning of", re.I)
 
 def is_question(text: str) -> bool:
@@ -67,6 +38,18 @@ def is_low_info(reply: str) -> bool:
         return True
     return False
 
+def extract_bot_reply(full: str) -> str:
+    pos = full.rfind("Bot:")
+    segment = full[pos + 4:] if pos != -1 else full
+    m = re.search(r"\n(?:User|Bot)\s*:", segment, flags=re.I)
+    if m:
+        segment = segment[:m.start()]
+    segment = re.sub(r"\[[^\]]+\]", "", segment)
+    segment = re.sub(r"\b(User|Bot)\s*:", "", segment, flags=re.I)
+    segment = re.sub(r"\b(u\s+)?lt\s*3\b", "<3", segment, flags=re.I)
+    segment = re.sub(r"\s+", " ", segment)
+    return segment.strip()
+
 def jaccard_similarity(a: str, b: str) -> float:
     sa = set(a.lower().split())
     sb = set(b.lower().split())
@@ -75,44 +58,33 @@ def jaccard_similarity(a: str, b: str) -> float:
     return len(sa & sb) / len(sa | sb)
 
 def is_corrupted(text: str) -> bool:
-    # Indicators of role/tag leakage or garbled structure
     if re.search(r"\b(User|Bot)\s*:\s*(User|Bot)?", text, flags=re.I):
         return True
-    # Excess punctuation clusters without words
     if len(re.findall(r"[A-Za-z]", text)) < 3 and len(text) > 10:
         return True
-    # Multiple disjoint role markers inside reply
     if len(re.findall(r"\b(User|Bot)\s*:", text, flags=re.I)) > 0:
         return True
     return False
 
 def generate_reply(bundle: ModelBundle, prompt: str, user_input: str, recent_replies: List[str]) -> str:
     gen_kwargs = bundle.default_gen_kwargs.copy()
-    # Strengthen length bounds
     gen_kwargs.setdefault("min_new_tokens", 8)
     gen_kwargs["max_new_tokens"] = max(gen_kwargs.get("max_new_tokens", 55), 55)
     gen_kwargs.setdefault("repetition_penalty", 1.18 if is_question(user_input) else 1.15)
     gen_kwargs.setdefault("no_repeat_ngram_size", 3)
-
     if is_question(user_input):
         gen_kwargs["temperature"] = min(gen_kwargs.get("temperature", 0.6), 0.55)
         gen_kwargs["top_p"] = min(gen_kwargs.get("top_p", 0.92), 0.9)
-
     result = bundle.pipe(prompt, **gen_kwargs)[0]["generated_text"]
     reply = extract_bot_reply(result)
-
-    # Quick corruption cleanup & basic normalization
     reply = re.sub(r"\b(User|Bot)\s*:", "", reply, flags=re.I).strip()
-
     def needs_retry(r: str) -> bool:
         if is_low_info(r):
             return True
-        # Duplicate damping against last 5 replies
         for prev in recent_replies[-5:]:
             if jaccard_similarity(prev, r) > 0.8:
                 return True
         return False
-
     if needs_retry(reply) or is_corrupted(reply):
         regen = gen_kwargs.copy()
         regen["temperature"] = max(0.45, gen_kwargs.get("temperature", 0.55) - 0.05)
@@ -125,6 +97,63 @@ def generate_reply(bundle: ModelBundle, prompt: str, user_input: str, recent_rep
         if not needs_retry(cand):
             reply = cand
     return reply
+
+def is_chat_template_model(bundle: ModelBundle) -> bool:
+    tok = getattr(bundle.pipe, "tokenizer", None)
+    if tok is None:
+        return False
+    if hasattr(tok, "chat_template") and tok.chat_template:
+        return True
+    return False
+
+
+def generate_reply_chat(bundle: ModelBundle, messages: list, recent_replies: List[str]) -> str:
+    """Generate reply for chat-template capable models (e.g., TinyLlama)."""
+    tok = bundle.pipe.tokenizer
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    gen_kwargs = bundle.default_gen_kwargs.copy()
+    # Chat models often like a bit more length by default
+    gen_kwargs.setdefault("max_new_tokens", 128)
+    # Ensure sampling defaults reasonable
+    gen_kwargs.setdefault("temperature", 0.7)
+    gen_kwargs.setdefault("top_p", 0.95)
+    gen_kwargs.setdefault("top_k", 50)
+    result = bundle.pipe(prompt, **gen_kwargs)[0]["generated_text"]
+    # Extract new text after prompt
+    if result.startswith(prompt):
+        new_part = result[len(prompt):]
+    else:
+        # Fallback: attempt to split at assistant tag
+        parts = re.split(r"<\|assistant\|>", result)
+        new_part = parts[-1] if parts else result
+    # Truncate at next role tag
+    cut = re.search(r"<\|(user|system)\|>", new_part)
+    if cut:
+        new_part = new_part[:cut.start()]
+    # Basic cleanup
+    new_part = re.sub(r"</s>", "", new_part)
+    new_part = re.sub(r"\s+", " ", new_part).strip()
+    # Minimal duplicate / low-info filter reuse
+    if is_low_info(new_part) and recent_replies:
+        # one retry with slightly adjusted sampling
+        regen = gen_kwargs.copy()
+        regen["temperature"] = max(0.55, gen_kwargs.get("temperature", 0.7) - 0.1)
+        regen["top_p"] = min(0.9, gen_kwargs.get("top_p", 0.95))
+        regen["repetition_penalty"] = max(1.15, gen_kwargs.get("repetition_penalty", 1.1))
+        result2 = bundle.pipe(prompt, **regen)[0]["generated_text"]
+        if result2.startswith(prompt):
+            cand = result2[len(prompt):]
+        else:
+            parts = re.split(r"<\|assistant\|>", result2)
+            cand = parts[-1] if parts else result2
+        cut2 = re.search(r"<\|(user|system)\|>", cand)
+        if cut2:
+            cand = cand[:cut2.start()]
+        cand = re.sub(r"</s>", "", cand)
+        cand = re.sub(r"\s+", " ", cand).strip()
+        if not is_low_info(cand):
+            new_part = cand
+    return new_part
 
 
 # Command handling
@@ -176,6 +205,11 @@ def run_cli(
     system_prompt: Optional[str],
     seed: Optional[int],
     profile: Optional[str] = None,
+    top_k: Optional[int] = None,
+    torch_dtype: Optional[str] = None,
+    repetition_penalty: float = 1.18,
+    no_repeat_ngram_size: int = 3,
+    min_new_tokens: Optional[int] = 10,
 ):
     print(f"[INFO] Loading model '{model_name}' ...")
     bundle = load_model(
@@ -185,12 +219,16 @@ def run_cli(
         temperature=temperature,
         top_p=top_p,
         max_new_tokens=max_new_tokens,
+        top_k=top_k,
+        torch_dtype=torch_dtype,
+        repetition_penalty=repetition_penalty,
+        no_repeat_ngram_size=no_repeat_ngram_size,
+        min_new_tokens=min_new_tokens,
     )
 
-    # Few-shot priming examples (polite, concise style)
+    # Few-shot priming examples (kept small to avoid diluting chat template semantics)
     few_shot = [
-        ("Hi!", "Hello! How can I help you today?"),
-        ("Can you give me a quick focus tip?", "Pick one small task, silence notifications, and set a short timer."),
+        ("Hi!", "Hi there! How can I help?"),
     ]
 
     # Optional system primer (short to avoid dilution)
@@ -214,11 +252,50 @@ def run_cli(
                 break
             continue
 
-        # Build prompt
-        prompt = memory.build_context(user)
+        # Lightweight preprocessing shortcuts (arithmetic & simple capitals)
+        lower = user.lower()
+        # Arithmetic pattern: (what is)? a op b
+        m = re.match(r"^(?:what'?s|what is)?\s*(\d+)\s*([+\-*/xX])\s*(\d+)\s*\??$", lower)
+        if m:
+            a, op, b = m.groups(); a=int(a); b=int(b)
+            try:
+                if op in ['x','X','*']: val = a*b
+                elif op == '+': val = a+b
+                elif op == '-': val = a-b
+                else: val = a/b if b!=0 else 'undefined'
+            except Exception:
+                val = 'undefined'
+            print(f"Bot: {val}")
+            memory.add_turn(user, str(val))
+            recent_replies.append(str(val))
+            continue
+        # Simple capital lookup
+        CAPITALS = {
+            'france':'Paris','germany':'Berlin','italy':'Rome','spain':'Madrid','india':'New Delhi',
+            'japan':'Tokyo','canada':'Ottawa','brazil':'Brasília','australia':'Canberra','china':'Beijing'
+        }
+        cap_match = re.match(r"^(?:what('?s)?|what is)?\s*the\s*capital\s*of\s*([a-zA-Z]+)\??$", lower)
+        if cap_match:
+            country = cap_match.group(2).lower()
+            if country in CAPITALS:
+                ans = CAPITALS[country]
+                print(f"Bot: {ans}")
+                memory.add_turn(user, ans)
+                recent_replies.append(ans)
+                continue
+        chat_mode = is_chat_template_model(bundle)
+        messages = []
+        prompt = ""
+        if chat_mode:
+            messages = memory.build_messages(user)
+        else:
+            prompt = memory.build_context(user)
 
         try:
-            bot_reply = generate_reply(bundle, prompt, user_input=user, recent_replies=recent_replies)
+            if chat_mode:
+                bot_reply = generate_reply_chat(bundle, messages, recent_replies=recent_replies)
+            else:
+                bot_reply = generate_reply(bundle, prompt, user_input=user, recent_replies=recent_replies)
         except KeyboardInterrupt:
             print("\n[ABORTED] Generation interrupted.")
             continue

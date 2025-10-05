@@ -55,9 +55,9 @@ class ChatMemory:
         self._turns.clear()
 
     def build_context(self, next_user: str) -> str:
-        """Assemble prompt string for next generation.
+        """Assemble legacy prompt string for non-chat models (DialoGPT style).
 
-        Format (no bracketed role tags to better fit DialoGPT distribution):
+        Format:
             <system_prompt>\n
             User: <few-shot user 1>\n
             Bot: <few-shot bot 1>\n
@@ -82,6 +82,26 @@ class ChatMemory:
         lines.append("Bot:")
         return "\n".join(lines)
 
+    def build_messages(self, next_user: str):
+        """Return list of chat messages (dicts with role/content) suitable for tokenizer.apply_chat_template.
+
+        System prompt (if any) -> role system
+        Few-shot examples become alternating user/assistant.
+        Conversation turns likewise.
+        Final user input is appended as last 'user' role.
+        """
+        messages = []
+        if self.system_prompt.strip():
+            messages.append({"role": "system", "content": self.system_prompt.strip()})
+        for t in self._few_shot:
+            messages.append({"role": "user", "content": t.user})
+            messages.append({"role": "assistant", "content": t.bot})
+        for t in self._turns:
+            messages.append({"role": "user", "content": t.user})
+            messages.append({"role": "assistant", "content": t.bot})
+        messages.append({"role": "user", "content": next_user})
+        return messages
+
     def export_transcript(self) -> str:
         """Return transcript excluding the hidden system prompt and few-shot examples."""
         out_lines: List[str] = []
@@ -100,9 +120,11 @@ if __name__ == "__main__":  # Simple manual test
     mem = ChatMemory(window_size=2)
     mem.add_turn("Hello", "Hi there!")
     mem.add_turn("How are you?", "I'm functioning as expected.")
-    # This will push out the first when next added
+    # Legacy context format
     print(mem.build_context("What can you do?"))
     mem.add_turn("What can you do?", "I can generate text.")
     mem.add_turn("Another question", "Another answer")
+    print("--- Messages ---")
+    print(mem.build_messages("Final?"))
     print("--- Transcript ---")
     print(mem.export_transcript())

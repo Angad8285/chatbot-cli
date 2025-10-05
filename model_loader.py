@@ -12,7 +12,7 @@ from transformers import (
 )
 import transformers
 
-DEFAULT_MODEL_NAME = "microsoft/DialoGPT-small"
+DEFAULT_MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"  # TinyLlama set as default
 
 
 @dataclass
@@ -38,13 +38,15 @@ def load_model(
     model_name: str = DEFAULT_MODEL_NAME,
     device: Optional[str] = None,
     seed: Optional[int] = 42,
-    temperature: float = 0.6,
-    top_p: float = 0.92,
-    max_new_tokens: int = 45,
+    temperature: float = 0.55,
+    top_p: float = 0.9,
+    max_new_tokens: int = 160,
     do_sample: bool = True,
-    repetition_penalty: float = 1.15,
+    repetition_penalty: float = 1.18,
     no_repeat_ngram_size: int = 3,
-    min_new_tokens: int | None = None,
+    min_new_tokens: int | None = 10,
+    top_k: Optional[int] = 50,
+    torch_dtype: Optional[str] = None,
 ) -> ModelBundle:
     """Args:
         model_name: Hugging Face model identifier.
@@ -73,8 +75,28 @@ def load_model(
         tokenizer = AutoTokenizer.from_pretrained(model_name)
     except Exception as e:
         raise RuntimeError(f"Failed to load tokenizer for '{model_name}': {e}") from e
+    # Choose dtype automatically for chat/instruction models if not explicitly provided
+    dtype_obj = None
+    if torch_dtype:
+        # Map string to torch dtype if provided as string
+        dtype_map = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "float32": torch.float32,
+        }
+        dtype_obj = dtype_map.get(torch_dtype.lower(), None) if isinstance(torch_dtype, str) else torch_dtype
+    else:
+        if "TinyLlama-1.1B-Chat" in model_name:
+            # Prefer bfloat16 if supported (CPU fallback will ignore)
+            if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+                dtype_obj = torch.bfloat16
+            else:
+                # Use float16 where appropriate (MPS currently prefers float16)
+                if torch.cuda.is_available() or (hasattr(torch.backends,"mps") and torch.backends.mps.is_available()):
+                    dtype_obj = torch.float16
     try:
-        model = AutoModelForCausalLM.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype_obj)
     except Exception as e:
         raise RuntimeError(f"Failed to load model '{model_name}': {e}") from e
 
@@ -113,6 +135,8 @@ def load_model(
         repetition_penalty=repetition_penalty,
         no_repeat_ngram_size=no_repeat_ngram_size,
     )
+    if top_k is not None:
+        default_gen["top_k"] = top_k
     if min_new_tokens is not None:
         default_gen["min_new_tokens"] = min_new_tokens
 
