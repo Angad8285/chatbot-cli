@@ -12,7 +12,7 @@ from transformers import (
 )
 import transformers
 
-DEFAULT_MODEL_NAME = "openai-community/openai-gpt"
+DEFAULT_MODEL_NAME = "microsoft/DialoGPT-small"
 
 
 @dataclass
@@ -119,7 +119,7 @@ def load_model(
 # Simple manual smoke test when run directly.
 if __name__ == "__main__":  
     bundle = load_model()
-    test_prompt = "[User]: Hello\n[Bot]:"
+    test_prompt = "User: Hello\nAssistant:"
     print("Loaded model:", bundle.model_name)
     out = bundle.pipe(test_prompt, **bundle.default_gen_kwargs)[0]["generated_text"]
     print(out)

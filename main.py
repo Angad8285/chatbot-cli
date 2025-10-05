@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 from interface import run_cli
 
-DEFAULT_MODEL = "openai-community/openai-gpt"
+DEFAULT_MODEL = "microsoft/DialoGPT-small"
 
 
 def parse_args() -> argparse.Namespace:

@@ -4,6 +4,7 @@ import json
 import datetime as _dt
 from pathlib import Path
 from typing import Optional, Dict, Any
+import re
 
 from model_loader import load_model, ModelBundle
 from chat_memory import ChatMemory
@@ -14,25 +15,54 @@ COMMAND_PREFIX = "/"
 # Generation helpers
 
 def extract_bot_reply(full: str) -> str:
-    if "[Bot]:" in full:
-        segment = full.split("[Bot]:")[-1]
-    else:
-        segment = full
-    # Truncate at potential new user markers
-    for marker in ("[User]:", "User:", "Human:"):
-        pos = segment.find(marker)
-        if pos != -1:
-            segment = segment[:pos]
-    # Basic cleanup of bracket noise (heuristic)
-    cleaned = segment.strip()
-    return cleaned
+    # Find last "Bot:" marker; else take whole.
+    pos = full.rfind("Bot:")
+    segment = full[pos + 4:] if pos != -1 else full
+    # Stop if model starts next turn prematurely
+    for marker in ("User:", "USER:"):
+        cut = segment.find(marker)
+        if cut != -1:
+            segment = segment[:cut]
+    # Remove stray bracketed artifacts if any
+    segment = re.sub(r"\[[^\]]+\]", "", segment)
+    segment = re.sub(r"\s+", " ", segment)
+    return segment.strip()
 
-def generate_reply(bundle: ModelBundle, prompt: str, overrides: Optional[Dict[str, Any]] = None) -> str:
+LOW_INFO_PATTERN = re.compile(r"^(i'?m (a )?(simple )?bot\.?|i did\.?|i don't know\.?){1,2}$", re.I)
+
+QUESTION_PATTERN = re.compile(r"\b(what|who|when|where|why|how)\b|capital of|meaning of", re.I)
+
+def is_question(text: str) -> bool:
+    return bool(QUESTION_PATTERN.search(text)) or text.strip().endswith("?")
+
+def is_low_info(reply: str) -> bool:
+    return len(reply) < 12 or LOW_INFO_PATTERN.match(reply.strip()) is not None
+
+def generate_reply(bundle: ModelBundle, prompt: str, user_input: str) -> str:
     gen_kwargs = bundle.default_gen_kwargs.copy()
-    if overrides:
-        gen_kwargs.update(overrides)
+    # Add anti-repetition if not present
+    gen_kwargs.setdefault("repetition_penalty", 1.15)
+    gen_kwargs.setdefault("no_repeat_ngram_size", 3)
+    gen_kwargs.setdefault("max_new_tokens", min(gen_kwargs.get("max_new_tokens", 60), 60))
+
+    if is_question(user_input):
+        # Make answers crisper
+        gen_kwargs["temperature"] = min(gen_kwargs.get("temperature", 0.7), 0.5)
+        gen_kwargs["top_p"] = min(gen_kwargs.get("top_p", 0.9), 0.88)
+        gen_kwargs["max_new_tokens"] = min(gen_kwargs.get("max_new_tokens", 60), 50)
+
     result = bundle.pipe(prompt, **gen_kwargs)[0]["generated_text"]
-    return extract_bot_reply(result)
+    reply = extract_bot_reply(result)
+    if is_low_info(reply):
+        # Retry once with slightly adjusted parameters
+        regen = gen_kwargs.copy()
+        regen["temperature"] = max(0.35, gen_kwargs["temperature"] * 0.9)
+        regen["top_p"] = max(0.8, gen_kwargs.get("top_p", 0.85))
+        result2 = bundle.pipe(prompt, **regen)[0]["generated_text"]
+        cand = extract_bot_reply(result2)
+        if not is_low_info(cand):
+            reply = cand
+    return reply
 
 
 # Command handling
@@ -114,7 +144,7 @@ def run_cli(
         prompt = memory.build_context(user)
 
         try:
-            bot_reply = generate_reply(bundle, prompt)
+            bot_reply = generate_reply(bundle, prompt, user_input=user)
         except KeyboardInterrupt:
             print("\n[ABORTED] Generation interrupted.")
             continue

@@ -1,6 +1,5 @@
 task1.pdf
 .venv
 .DS_Store
-.gitignore
-interface.py
-main.py
+transcript*
+__*
