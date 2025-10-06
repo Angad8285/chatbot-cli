@@ -49,18 +49,6 @@ Commands: `/help` `/reset` `/save [file]` `/config` `/exit`
 
 Defaults tuned for balanced factual Q&A while allowing moderate elaboration.
 
-## 4. Recommended Presets
-Focused Q&A:
-```bash
-python main.py --temperature 0.55 --top-p 0.9 --top-k 50 \
-  --repetition-penalty 1.18 --no-repeat-ngram 3 \
-  --max-new-tokens 160 --min-new-tokens 10
-```
-Creative Ideation:
-```bash
-python main.py --temperature 0.7 --top-p 0.95 --top-k 60 \
-  --repetition-penalty 1.08 --max-new-tokens 180
-```
 
 ## 5. Chat Flow
 Messages (system + alternating user/assistant) are assembled and converted using the tokenizer's `chat_template` with `add_generation_prompt=True`.
@@ -78,15 +66,6 @@ Messages (system + alternating user/assistant) are assembled and converted using
 | Wrong simple math | Model hallucination | Arithmetic shortcut handles basics |
 | Capital answer wrong | Outside dictionary | Extend capitals map or use larger model |
 
-## 8. Saving & Exporting
-`/save my.json` writes transcript (system prompt & few-shot excluded).
 
-## 9. Roadmap
-- Optional: `--no-few-shot` flag
-- External configurable shortcuts
-- Retrieval augmentation stub
-- Evaluation script for deterministic test set
 
----
-*Status:* Active experimental prototype (TinyLlama focused); expect iterative refinement.
 
